@@ -1,63 +1,45 @@
+"""AgroGestor: sistema de consola para administrar una finca pequena.
+
+Proyecto educativo, sin dependencias externas. Incluye productores, lotes,
+cultivos, labores, inventario, cosechas, ventas, gastos y reportes.
+Ejecutar: python main.py | python main.py --demo | python main.py --reset --demo
 """
-AulaFlow - Sistema integral de gestion academica.
-
-Aplicacion de consola sin dependencias externas para administrar estudiantes,
-cursos, tareas, biblioteca y reportes de rendimiento. Usa SQLite para que la
-informacion sobreviva al cierre del programa.
-
-Ejecutar:
-	python main.py
-
-Modo demostracion:
-	python main.py --demo
-"""
-
 from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
-import os
 import sqlite3
-import sys
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
+
+APP = "AGROGESTOR"
+DB = Path(__file__).with_name("agrogestor.db")
 
 
-APP_NAME = "AULAFLOW"
-DB_FILE = Path(__file__).with_name("aulaflow.db")
-EXPORT_DIR = Path(__file__).with_name("reportes")
-
-
-def now_text() -> str:
+def now() -> str:
 	return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def today_text() -> str:
+def today() -> str:
 	return date.today().isoformat()
 
 
-def clean(value: str) -> str:
+def text(value: str) -> str:
 	return " ".join(value.strip().split())
 
 
 def money(value: float) -> str:
-	return f"${value:,.2f}"
+	return f"${value:,.0f}"
 
 
-def password_hash(password: str) -> str:
-	return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def title(text: str) -> None:
+def heading(value: str) -> None:
 	print("\n" + "=" * 76)
-	print(f"  {text}")
+	print(f"  {value}")
 	print("=" * 76)
 
 
-def line() -> None:
+def separator() -> None:
 	print("-" * 76)
 
 
@@ -65,47 +47,44 @@ def pause() -> None:
 	input("\nPresiona ENTER para continuar...")
 
 
-def ask(prompt: str, default: str = "") -> str:
+def ask(label: str, default: str = "") -> str:
 	suffix = f" [{default}]" if default else ""
-	answer = input(f"{prompt}{suffix}: ").strip()
-	return answer or default
+	value = input(f"{label}{suffix}: ").strip()
+	return value or default
 
 
-def ask_int(prompt: str, default: Optional[int] = None) -> Optional[int]:
+def ask_int(label: str, default: Optional[int] = None) -> Optional[int]:
 	while True:
-		raw = ask(prompt, "" if default is None else str(default))
-		if not raw:
+		value = ask(label, "" if default is None else str(default))
+		if not value:
 			return None
 		try:
-			return int(raw)
+			return int(value)
 		except ValueError:
-			print("Ingresa un numero entero valido.")
+			print("Escribe un numero entero valido.")
 
 
-def ask_float(prompt: str, default: Optional[float] = None) -> Optional[float]:
+def ask_float(label: str, default: Optional[float] = None) -> Optional[float]:
 	while True:
-		raw = ask(prompt, "" if default is None else str(default))
-		if not raw:
+		value = ask(label, "" if default is None else str(default))
+		if not value:
 			return None
 		try:
-			return float(raw.replace(",", "."))
+			return float(value.replace(",", "."))
 		except ValueError:
-			print("Ingresa un numero valido.")
+			print("Escribe un numero valido.")
 
 
-@dataclass
-class Session:
-	user_id: int
-	username: str
-	full_name: str
-	role: str
+def is_date(value: str) -> bool:
+	try:
+		datetime.strptime(value, "%Y-%m-%d")
+		return True
+	except ValueError:
+		return False
 
 
 class Database:
-	"""Capa pequena y explicita de persistencia para mantener el sistema claro."""
-
-	def __init__(self, path: Path = DB_FILE) -> None:
-		self.path = path
+	def __init__(self, path: Path = DB) -> None:
 		self.connection = sqlite3.connect(path)
 		self.connection.row_factory = sqlite3.Row
 		self.connection.execute("PRAGMA foreign_keys = ON")
@@ -114,510 +93,487 @@ class Database:
 	def close(self) -> None:
 		self.connection.close()
 
-	def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
-		cursor = self.connection.execute(sql, tuple(params))
+	def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+		cursor = self.connection.execute(sql, params)
 		self.connection.commit()
 		return cursor
 
-	def query(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
-		return list(self.connection.execute(sql, tuple(params)).fetchall())
+	def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+		return list(self.connection.execute(sql, params).fetchall())
 
-	def one(self, sql: str, params: Iterable[Any] = ()) -> Optional[sqlite3.Row]:
-		return self.connection.execute(sql, tuple(params)).fetchone()
+	def one(self, sql: str, params: tuple[Any, ...] = ()) -> Optional[sqlite3.Row]:
+		return self.connection.execute(sql, params).fetchone()
+
+	def count(self, table: str) -> int:
+		allowed = {"people", "plots", "crops", "tasks", "supplies", "harvests", "sales", "expenses"}
+		if table not in allowed:
+			raise ValueError("Tabla no permitida")
+		row = self.one(f"SELECT COUNT(*) total FROM {table}")
+		return int(row["total"]) if row else 0
 
 	def create_schema(self) -> None:
 		self.connection.executescript(
 			"""
-			CREATE TABLE IF NOT EXISTS users (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				username TEXT UNIQUE NOT NULL,
-				password TEXT NOT NULL,
-				full_name TEXT NOT NULL,
-				role TEXT NOT NULL DEFAULT 'teacher',
-				active INTEGER NOT NULL DEFAULT 1,
-				created_at TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS students (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				code TEXT UNIQUE NOT NULL,
-				full_name TEXT NOT NULL,
-				email TEXT UNIQUE NOT NULL,
-				phone TEXT DEFAULT '',
-				program TEXT NOT NULL,
-				semester INTEGER NOT NULL DEFAULT 1,
-				status TEXT NOT NULL DEFAULT 'active',
-				created_at TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS courses (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				code TEXT UNIQUE NOT NULL,
-				name TEXT NOT NULL,
-				teacher TEXT NOT NULL,
-				credits INTEGER NOT NULL DEFAULT 3,
-				room TEXT DEFAULT '',
-				schedule TEXT DEFAULT '',
-				active INTEGER NOT NULL DEFAULT 1
-			);
-			CREATE TABLE IF NOT EXISTS enrollments (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				student_id INTEGER NOT NULL REFERENCES students(id),
-				course_id INTEGER NOT NULL REFERENCES courses(id),
-				enrolled_at TEXT NOT NULL,
-				UNIQUE(student_id, course_id)
-			);
-			CREATE TABLE IF NOT EXISTS grades (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				enrollment_id INTEGER NOT NULL REFERENCES enrollments(id),
-				label TEXT NOT NULL,
-				score REAL NOT NULL CHECK(score >= 0 AND score <= 5),
-				weight REAL NOT NULL DEFAULT 1,
-				recorded_at TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS assignments (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				course_id INTEGER NOT NULL REFERENCES courses(id),
-				title TEXT NOT NULL,
-				description TEXT DEFAULT '',
-				due_date TEXT NOT NULL,
-				max_score REAL NOT NULL DEFAULT 5,
-				status TEXT NOT NULL DEFAULT 'open'
-			);
-			CREATE TABLE IF NOT EXISTS books (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				isbn TEXT UNIQUE NOT NULL,
-				title TEXT NOT NULL,
-				author TEXT NOT NULL,
-				category TEXT NOT NULL,
-				total INTEGER NOT NULL DEFAULT 1,
-				available INTEGER NOT NULL DEFAULT 1
-			);
-			CREATE TABLE IF NOT EXISTS loans (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				book_id INTEGER NOT NULL REFERENCES books(id),
-				student_id INTEGER NOT NULL REFERENCES students(id),
-				loaned_at TEXT NOT NULL,
-				due_date TEXT NOT NULL,
-				returned_at TEXT,
-				fine REAL NOT NULL DEFAULT 0
-			);
-			CREATE TABLE IF NOT EXISTS activity_log (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				user_id INTEGER REFERENCES users(id),
-				action TEXT NOT NULL,
-				details TEXT NOT NULL,
-				created_at TEXT NOT NULL
-			);
+			CREATE TABLE IF NOT EXISTS people(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+			 document TEXT UNIQUE NOT NULL, phone TEXT DEFAULT '',
+			 email TEXT DEFAULT '', role TEXT DEFAULT 'trabajador', active INTEGER DEFAULT 1,
+			 created_at TEXT NOT NULL);
+			CREATE TABLE IF NOT EXISTS plots(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+			 area REAL NOT NULL, location TEXT DEFAULT '', soil TEXT DEFAULT '',
+			 water TEXT DEFAULT '', status TEXT DEFAULT 'disponible');
+			CREATE TABLE IF NOT EXISTS crops(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, variety TEXT DEFAULT '',
+			 plot_id INTEGER NOT NULL REFERENCES plots(id), person_id INTEGER REFERENCES people(id),
+			 planted TEXT NOT NULL, expected TEXT, area REAL NOT NULL,
+			 status TEXT DEFAULT 'sembrado', notes TEXT DEFAULT '');
+			CREATE TABLE IF NOT EXISTS tasks(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, crop_id INTEGER REFERENCES crops(id),
+			 person_id INTEGER REFERENCES people(id), title TEXT NOT NULL,
+			 description TEXT DEFAULT '', due TEXT NOT NULL, status TEXT DEFAULT 'pendiente', cost REAL DEFAULT 0);
+			CREATE TABLE IF NOT EXISTS supplies(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, category TEXT NOT NULL,
+			 unit TEXT NOT NULL, quantity REAL DEFAULT 0, minimum REAL DEFAULT 0,
+			 unit_cost REAL DEFAULT 0, supplier TEXT DEFAULT '');
+			CREATE TABLE IF NOT EXISTS movements(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, supply_id INTEGER NOT NULL REFERENCES supplies(id),
+			 kind TEXT NOT NULL, quantity REAL NOT NULL, movement_date TEXT NOT NULL, note TEXT DEFAULT '');
+			CREATE TABLE IF NOT EXISTS harvests(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, crop_id INTEGER NOT NULL REFERENCES crops(id),
+			 harvest_date TEXT NOT NULL, quantity REAL NOT NULL, unit TEXT NOT NULL,
+			 quality TEXT DEFAULT 'Primera', unit_price REAL DEFAULT 0, note TEXT DEFAULT '');
+			CREATE TABLE IF NOT EXISTS sales(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, harvest_id INTEGER NOT NULL REFERENCES harvests(id),
+			 customer TEXT NOT NULL, sale_date TEXT NOT NULL, quantity REAL NOT NULL,
+			 unit_price REAL NOT NULL, payment TEXT DEFAULT 'pendiente');
+			CREATE TABLE IF NOT EXISTS expenses(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL,
+			 description TEXT NOT NULL, amount REAL NOT NULL, expense_date TEXT NOT NULL);
+			CREATE TABLE IF NOT EXISTS activity(
+			 id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
+			 detail TEXT NOT NULL, created_at TEXT NOT NULL);
 			"""
 		)
 		self.connection.commit()
 
-	def log(self, session: Optional[Session], action: str, details: str) -> None:
-		user_id = session.user_id if session else None
-		self.execute(
-			"INSERT INTO activity_log(user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-			(user_id, action, details, now_text()),
-		)
-
-	def count(self, table: str) -> int:
-		allowed = {"students", "courses", "books", "assignments", "loans"}
-		if table not in allowed:
-			raise ValueError("Tabla no permitida")
-		row = self.one(f"SELECT COUNT(*) AS total FROM {table}")
-		return int(row["total"]) if row else 0
+	def log(self, action: str, detail: str) -> None:
+		self.execute("INSERT INTO activity(action, detail, created_at) VALUES(?,?,?)", (action, detail, now()))
 
 
-class AuthService:
+class People:
 	def __init__(self, db: Database) -> None:
 		self.db = db
 
-	def ensure_admin(self) -> None:
-		if self.db.one("SELECT id FROM users LIMIT 1") is None:
-			self.db.execute(
-				"INSERT INTO users(username, password, full_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
-				("admin", password_hash("admin123"), "Administrador AulaFlow", "admin", now_text()),
-			)
-
-	def login(self) -> Optional[Session]:
-		title("INICIO DE SESION")
-		print("Usuario demo: admin | Clave demo: admin123")
-		username = ask("Usuario")
-		password = ask("Clave")
-		user = self.db.one(
-			"SELECT * FROM users WHERE username = ? AND password = ? AND active = 1",
-			(username, password_hash(password)),
-		)
-		if not user:
-			print("\nCredenciales invalidas.")
-			return None
-		return Session(user["id"], user["username"], user["full_name"], user["role"])
-
-	def create_user(self, session: Session) -> None:
-		title("CREAR USUARIO")
-		username = clean(ask("Nombre de usuario"))
-		full_name = clean(ask("Nombre completo"))
-		role = ask("Rol (admin/teacher)", "teacher")
-		password = ask("Clave temporal", "campus123")
-		if not username or not full_name:
-			print("Los campos principales son obligatorios.")
-			return
-		try:
-			self.db.execute(
-				"INSERT INTO users(username, password, full_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
-				(username, password_hash(password), full_name, role, now_text()),
-			)
-			self.db.log(session, "CREATE_USER", username)
-			print("Usuario creado correctamente.")
-		except sqlite3.IntegrityError:
-			print("Ese nombre de usuario ya existe.")
-
-
-class StudentService:
-	def __init__(self, db: Database) -> None:
-		self.db = db
-
-	def create(self, session: Session) -> None:
-		title("REGISTRAR ESTUDIANTE")
-		code = clean(ask("Codigo estudiantil")).upper()
-		name = clean(ask("Nombre completo"))
-		email = clean(ask("Correo"))
-		phone = clean(ask("Telefono"))
-		program = clean(ask("Programa academico"))
-		semester = ask_int("Semestre", 1) or 1
-		if not all((code, name, email, program)):
-			print("Codigo, nombre, correo y programa son obligatorios.")
-			return
-		try:
-			self.db.execute(
-				"INSERT INTO students(code, full_name, email, phone, program, semester, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				(code, name, email, phone, program, semester, now_text()),
-			)
-			self.db.log(session, "CREATE_STUDENT", code)
-			print("Estudiante registrado.")
-		except sqlite3.IntegrityError:
-			print("El codigo o correo ya esta registrado.")
-
-	def list_all(self, search: str = "") -> list[sqlite3.Row]:
-		pattern = f"%{search}%"
-		return self.db.query(
-			"SELECT * FROM students WHERE full_name LIKE ? OR code LIKE ? OR program LIKE ? ORDER BY full_name",
-			(pattern, pattern, pattern),
-		)
+	def get(self, identifier: int) -> Optional[sqlite3.Row]:
+		return self.db.one("SELECT * FROM people WHERE id=?", (identifier,))
 
 	def show(self, search: str = "") -> None:
-		title("ESTUDIANTES")
-		rows = self.list_all(search)
-		if not rows:
-			print("No hay estudiantes que coincidan.")
-			return
-		print(f"{'ID':<4} {'CODIGO':<12} {'NOMBRE':<28} {'PROGRAMA':<18} {'SEM':<4} {'ESTADO'}")
-		line()
+		heading("PRODUCTORES Y TRABAJADORES")
+		pattern = f"%{search}%"
+		rows = self.db.query("SELECT * FROM people WHERE name LIKE ? OR document LIKE ? ORDER BY name", (pattern, pattern))
+		print(f"{'ID':<4} {'NOMBRE':<27} {'DOCUMENTO':<14} {'ROL':<18} {'TELEFONO':<13} ESTADO")
+		separator()
 		for row in rows:
-			print(f"{row['id']:<4} {row['code']:<12} {row['full_name'][:27]:<28} {row['program'][:17]:<18} {row['semester']:<4} {row['status']}")
+			state = "Activo" if row["active"] else "Inactivo"
+			print(f"{row['id']:<4} {row['name'][:26]:<27} {row['document']:<14} {row['role'][:17]:<18} {row['phone'][:12]:<13} {state}")
+		if not rows:
+			print("No hay personas registradas.")
 
-	def get(self, student_id: int) -> Optional[sqlite3.Row]:
-		return self.db.one("SELECT * FROM students WHERE id = ?", (student_id,))
-
-	def profile(self, student_id: int) -> None:
-		student = self.get(student_id)
-		if not student:
-			print("Estudiante no encontrado.")
+	def create(self) -> None:
+		heading("NUEVA PERSONA")
+		name = text(ask("Nombre completo"))
+		document = text(ask("Documento"))
+		phone = text(ask("Telefono"))
+		email = text(ask("Correo"))
+		role = text(ask("Rol", "trabajador"))
+		if not name or not document:
+			print("Nombre y documento son obligatorios.")
 			return
-		title(f"PERFIL: {student['full_name']}")
-		print(f"Codigo: {student['code']}   Correo: {student['email']}")
-		print(f"Programa: {student['program']}   Semestre: {student['semester']}")
-		print(f"Estado: {student['status']}")
-		courses = self.db.query(
-			"""SELECT c.code, c.name, COALESCE(AVG(g.score), 0) AS average
-			   FROM enrollments e JOIN courses c ON c.id=e.course_id
-			   LEFT JOIN grades g ON g.enrollment_id=e.id
-			   WHERE e.student_id=? GROUP BY e.id ORDER BY c.name""",
-			(student_id,),
-		)
-		line()
-		print("CURSOS INSCRITOS")
-		for course in courses:
-			print(f"  {course['code']:<10} {course['name']:<35} Promedio: {course['average']:.2f}")
+		try:
+			self.db.execute("INSERT INTO people(name,document,phone,email,role,created_at) VALUES(?,?,?,?,?,?)", (name, document, phone, email, role, now()))
+			self.db.log("PERSONA_CREADA", name)
+			print("Persona registrada.")
+		except sqlite3.IntegrityError:
+			print("El documento ya existe.")
 
-	def change_status(self, session: Session) -> None:
+	def toggle(self) -> None:
 		self.show()
-		student_id = ask_int("ID del estudiante")
-		if not student_id or not self.get(student_id):
-			print("ID invalido.")
+		identifier = ask_int("ID de la persona")
+		person = self.get(identifier) if identifier else None
+		if not person:
+			print("Persona no encontrada.")
 			return
-		status = ask("Estado (active/inactive/graduated)", "active")
-		self.db.execute("UPDATE students SET status=? WHERE id=?", (status, student_id))
-		self.db.log(session, "UPDATE_STUDENT_STATUS", str(student_id))
+		active = 0 if person["active"] else 1
+		self.db.execute("UPDATE people SET active=? WHERE id=?", (active, identifier))
+		self.db.log("PERSONA_ESTADO", str(identifier))
 		print("Estado actualizado.")
 
 
-class AcademicService:
-	def __init__(self, db: Database, students: StudentService) -> None:
+class Plots:
+	def __init__(self, db: Database) -> None:
 		self.db = db
-		self.students = students
 
-	def create_course(self, session: Session) -> None:
-		title("CREAR CURSO")
-		code = clean(ask("Codigo del curso")).upper()
-		name = clean(ask("Nombre del curso"))
-		teacher = clean(ask("Docente"))
-		credits = ask_int("Creditos", 3) or 3
-		room = clean(ask("Aula"))
-		schedule = clean(ask("Horario"))
-		try:
-			self.db.execute(
-				"INSERT INTO courses(code, name, teacher, credits, room, schedule) VALUES (?, ?, ?, ?, ?, ?)",
-				(code, name, teacher, credits, room, schedule),
-			)
-			self.db.log(session, "CREATE_COURSE", code)
-			print("Curso creado.")
-		except sqlite3.IntegrityError:
-			print("El codigo del curso ya existe.")
+	def get(self, identifier: int) -> Optional[sqlite3.Row]:
+		return self.db.one("SELECT * FROM plots WHERE id=?", (identifier,))
 
-	def list_courses(self) -> list[sqlite3.Row]:
-		return self.db.query(
-			"SELECT c.*, COUNT(e.id) AS students_count FROM courses c LEFT JOIN enrollments e ON e.course_id=c.id GROUP BY c.id ORDER BY c.name"
-		)
-
-	def show_courses(self) -> None:
-		title("CATALOGO DE CURSOS")
-		rows = self.list_courses()
+	def show(self) -> None:
+		heading("LOTES")
+		rows = self.db.query("SELECT p.*, COUNT(c.id) crops FROM plots p LEFT JOIN crops c ON c.plot_id=p.id AND c.status!='finalizado' GROUP BY p.id ORDER BY p.name")
+		print(f"{'ID':<4} {'NOMBRE':<18} {'HECTAREAS':<12} {'SUELO':<15} {'AGUA':<15} {'CULTIVOS':<10} ESTADO")
+		separator()
+		for row in rows:
+			print(f"{row['id']:<4} {row['name'][:17]:<18} {row['area']:<12.2f} {row['soil'][:14]:<15} {row['water'][:14]:<15} {row['crops']:<10} {row['status']}")
 		if not rows:
-			print("No hay cursos creados.")
-			return
-		print(f"{'ID':<4} {'CODIGO':<10} {'CURSO':<30} {'DOCENTE':<22} {'EST':<4} {'CRED'}")
-		line()
-		for row in rows:
-			print(f"{row['id']:<4} {row['code']:<10} {row['name'][:29]:<30} {row['teacher'][:21]:<22} {row['students_count']:<4} {row['credits']}")
+			print("No hay lotes registrados.")
 
-	def enroll(self, session: Session) -> None:
-		self.students.show()
-		student_id = ask_int("ID estudiante")
-		self.show_courses()
-		course_id = ask_int("ID curso")
-		if not student_id or not course_id:
-			print("Datos incompletos.")
+	def create(self) -> None:
+		heading("NUEVO LOTE")
+		name = text(ask("Nombre del lote"))
+		area = ask_float("Area en hectareas")
+		location = text(ask("Ubicacion"))
+		soil = text(ask("Tipo de suelo", "Franco"))
+		water = text(ask("Fuente de agua", "Lluvia"))
+		if not name or area is None or area <= 0:
+			print("Nombre y area positiva son obligatorios.")
 			return
 		try:
-			self.db.execute(
-				"INSERT INTO enrollments(student_id, course_id, enrolled_at) VALUES (?, ?, ?)",
-				(student_id, course_id, now_text()),
-			)
-			self.db.log(session, "ENROLLMENT", f"student={student_id}, course={course_id}")
-			print("Inscripcion realizada.")
+			self.db.execute("INSERT INTO plots(name,area,location,soil,water) VALUES(?,?,?,?,?)", (name, area, location, soil, water))
+			self.db.log("LOTE_CREADO", name)
+			print("Lote registrado.")
 		except sqlite3.IntegrityError:
-			print("El estudiante ya esta inscrito o alguno de los IDs no existe.")
-
-	def record_grade(self, session: Session) -> None:
-		title("REGISTRAR NOTA")
-		student_id = ask_int("ID estudiante")
-		if not student_id or not self.students.get(student_id):
-			print("Estudiante no encontrado.")
-			return
-		rows = self.db.query(
-			"SELECT e.id, c.code, c.name FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.student_id=?",
-			(student_id,),
-		)
-		for row in rows:
-			print(f"{row['id']}: {row['code']} - {row['name']}")
-		enrollment_id = ask_int("ID de inscripcion")
-		label = clean(ask("Actividad (parcial, proyecto, etc.)"))
-		score = ask_float("Nota (0 a 5)")
-		weight = ask_float("Peso", 1) or 1
-		if enrollment_id and label and score is not None and 0 <= score <= 5:
-			try:
-				self.db.execute(
-					"INSERT INTO grades(enrollment_id, label, score, weight, recorded_at) VALUES (?, ?, ?, ?, ?)",
-					(enrollment_id, label, score, weight, now_text()),
-				)
-				self.db.log(session, "RECORD_GRADE", str(enrollment_id))
-				print("Nota registrada.")
-			except sqlite3.IntegrityError:
-				print("La inscripcion indicada no existe.")
-		else:
-			print("Nota invalida. Debe estar entre 0 y 5.")
-
-	def create_assignment(self, session: Session) -> None:
-		self.show_courses()
-		course_id = ask_int("ID del curso")
-		assignment_title = clean(ask("Titulo de la tarea"))
-		description = clean(ask("Descripcion"))
-		due_date = ask("Fecha limite (AAAA-MM-DD)", (date.today() + timedelta(days=7)).isoformat())
-		max_score = ask_float("Puntaje maximo", 5) or 5
-		try:
-			datetime.strptime(due_date, "%Y-%m-%d")
-			self.db.execute(
-				"INSERT INTO assignments(course_id, title, description, due_date, max_score) VALUES (?, ?, ?, ?, ?)",
-				(course_id, assignment_title, description, due_date, max_score),
-			)
-			self.db.log(session, "CREATE_ASSIGNMENT", assignment_title)
-			print("Tarea publicada.")
-		except (ValueError, sqlite3.IntegrityError):
-			print("Fecha o curso invalido.")
-
-	def show_assignments(self) -> None:
-		title("TAREAS Y FECHAS")
-		rows = self.db.query(
-			"SELECT a.*, c.code, c.name FROM assignments a JOIN courses c ON c.id=a.course_id ORDER BY a.due_date"
-		)
-		for row in rows:
-			overdue = " VENCIDA" if row["due_date"] < today_text() and row["status"] == "open" else ""
-			print(f"#{row['id']} [{row['code']}] {row['title']} | limite: {row['due_date']} | max: {row['max_score']}{overdue}")
-			print(f"    {row['description']}")
-		if not rows:
-			print("No hay tareas registradas.")
+			print("Ya existe un lote con ese nombre.")
 
 
-class LibraryService:
-	def __init__(self, db: Database, students: StudentService) -> None:
+class Crops:
+	def __init__(self, db: Database, plots: Plots, people: People) -> None:
 		self.db = db
-		self.students = students
+		self.plots = plots
+		self.people = people
 
-	def add_book(self, session: Session) -> None:
-		title("AGREGAR LIBRO")
-		isbn = clean(ask("ISBN"))
-		book_title = clean(ask("Titulo"))
-		author = clean(ask("Autor"))
-		category = clean(ask("Categoria"))
-		total = ask_int("Cantidad", 1) or 1
-		try:
-			self.db.execute(
-				"INSERT INTO books(isbn, title, author, category, total, available) VALUES (?, ?, ?, ?, ?, ?)",
-				(isbn, book_title, author, category, total, total),
-			)
-			self.db.log(session, "ADD_BOOK", isbn)
-			print("Libro agregado al catalogo.")
-		except sqlite3.IntegrityError:
-			print("Ese ISBN ya existe.")
+	def get(self, identifier: int) -> Optional[sqlite3.Row]:
+		return self.db.one("SELECT * FROM crops WHERE id=?", (identifier,))
 
-	def show_books(self, search: str = "") -> None:
-		title("CATALOGO DE BIBLIOTECA")
+	def show(self, search: str = "") -> None:
+		heading("CULTIVOS")
 		pattern = f"%{search}%"
-		rows = self.db.query(
-			"SELECT * FROM books WHERE title LIKE ? OR author LIKE ? OR category LIKE ? ORDER BY title",
-			(pattern, pattern, pattern),
-		)
-		print(f"{'ID':<4} {'ISBN':<16} {'TITULO':<30} {'AUTOR':<20} {'DISP/TOT'}")
-		line()
+		rows = self.db.query("SELECT c.*,p.name plot_name,COALESCE(x.name,'Sin asignar') person_name FROM crops c JOIN plots p ON p.id=c.plot_id LEFT JOIN people x ON x.id=c.person_id WHERE c.name LIKE ? OR c.variety LIKE ? OR p.name LIKE ? ORDER BY c.status,c.expected", (pattern, pattern, pattern))
+		print(f"{'ID':<4} {'CULTIVO':<16} {'VARIEDAD':<16} {'LOTE':<15} {'SIEMBRA':<12} {'COSECHA':<12} ESTADO")
+		separator()
 		for row in rows:
-			print(f"{row['id']:<4} {row['isbn']:<16} {row['title'][:29]:<30} {row['author'][:19]:<20} {row['available']}/{row['total']}")
+			print(f"{row['id']:<4} {row['name'][:15]:<16} {row['variety'][:15]:<16} {row['plot_name'][:14]:<15} {row['planted']:<12} {row['expected'] or '-':<12} {row['status']}")
 		if not rows:
-			print("No hay libros que coincidan.")
+			print("No hay cultivos.")
 
-	def loan(self, session: Session) -> None:
-		self.show_books()
-		book_id = ask_int("ID del libro")
-		self.students.show()
-		student_id = ask_int("ID del estudiante")
-		days = ask_int("Dias de prestamo", 14) or 14
-		book = self.db.one("SELECT * FROM books WHERE id=? AND available > 0", (book_id,)) if book_id else None
-		student = self.students.get(student_id) if student_id else None
-		if not book or not student:
-			print("Libro sin disponibilidad o estudiante invalido.")
+	def create(self) -> None:
+		heading("NUEVO CULTIVO")
+		self.plots.show()
+		plot_id = ask_int("ID del lote")
+		if not plot_id or not self.plots.get(plot_id):
+			print("Lote invalido.")
 			return
-		due_date = (date.today() + timedelta(days=days)).isoformat()
-		self.db.execute(
-			"INSERT INTO loans(book_id, student_id, loaned_at, due_date) VALUES (?, ?, ?, ?)",
-			(book_id, student_id, today_text(), due_date),
-		)
-		self.db.execute("UPDATE books SET available=available-1 WHERE id=?", (book_id,))
-		self.db.log(session, "BOOK_LOAN", f"book={book_id}, student={student_id}")
-		print(f"Prestamo creado. Fecha limite: {due_date}")
+		name = text(ask("Cultivo"))
+		variety = text(ask("Variedad"))
+		planted = ask("Fecha de siembra", today())
+		expected = ask("Fecha esperada", (date.today() + timedelta(days=90)).isoformat())
+		area = ask_float("Area sembrada")
+		person_id = ask_int("ID del responsable (opcional)")
+		notes = text(ask("Notas"))
+		if not name or area is None or area <= 0 or not is_date(planted) or not is_date(expected):
+			print("Revisa nombre, area y fechas.")
+			return
+		if person_id and not self.people.get(person_id):
+			print("Responsable invalido.")
+			return
+		self.db.execute("INSERT INTO crops(name,variety,plot_id,person_id,planted,expected,area,notes) VALUES(?,?,?,?,?,?,?,?)", (name, variety, plot_id, person_id, planted, expected, area, notes))
+		self.db.execute("UPDATE plots SET status='ocupado' WHERE id=?", (plot_id,))
+		self.db.log("CULTIVO_CREADO", name)
+		print("Cultivo registrado.")
 
-	def return_book(self, session: Session) -> None:
-		rows = self.db.query(
-			"""SELECT l.id, b.title, s.full_name, l.due_date FROM loans l
-			   JOIN books b ON b.id=l.book_id JOIN students s ON s.id=l.student_id
-			   WHERE l.returned_at IS NULL ORDER BY l.due_date"""
-		)
-		title("PRESTAMOS ABIERTOS")
+	def finish(self) -> None:
+		self.show()
+		identifier = ask_int("ID del cultivo")
+		if not identifier or not self.get(identifier):
+			print("Cultivo no encontrado.")
+			return
+		self.db.execute("UPDATE crops SET status='finalizado' WHERE id=?", (identifier,))
+		self.db.log("CULTIVO_FINALIZADO", str(identifier))
+		print("Cultivo finalizado.")
+
+
+class Tasks:
+	def __init__(self, db: Database, crops: Crops, people: People) -> None:
+		self.db = db
+		self.crops = crops
+		self.people = people
+
+	def show(self, pending: bool = False) -> None:
+		heading("AGENDA DE LABORES")
+		condition = "WHERE t.status='pendiente'" if pending else ""
+		rows = self.db.query(f"SELECT t.*,COALESCE(c.name,'General') crop_name FROM tasks t LEFT JOIN crops c ON c.id=t.crop_id {condition} ORDER BY t.status,t.due")
+		print(f"{'ID':<4} {'LABOR':<27} {'CULTIVO':<16} {'FECHA':<12} {'COSTO':<14} ESTADO")
+		separator()
 		for row in rows:
-			print(f"#{row['id']} | {row['title'][:32]} | {row['full_name'][:25]} | limite {row['due_date']}")
-		loan_id = ask_int("ID del prestamo")
-		loan = self.db.one("SELECT * FROM loans WHERE id=? AND returned_at IS NULL", (loan_id,)) if loan_id else None
-		if not loan:
-			print("Prestamo no encontrado.")
+			print(f"{row['id']:<4} {row['title'][:26]:<27} {row['crop_name'][:15]:<16} {row['due']:<12} {money(row['cost']):<14} {row['status']}")
+		if not rows:
+			print("No hay labores.")
+
+	def create(self) -> None:
+		heading("PROGRAMAR LABOR")
+		self.crops.show()
+		crop_id = ask_int("ID del cultivo (opcional)")
+		if crop_id and not self.crops.get(crop_id):
+			print("Cultivo invalido.")
 			return
-		overdue_days = max(0, (date.today() - date.fromisoformat(loan["due_date"])).days)
-		fine = overdue_days * 0.75
-		self.db.execute("UPDATE loans SET returned_at=?, fine=? WHERE id=?", (today_text(), fine, loan_id))
-		self.db.execute("UPDATE books SET available=available+1 WHERE id=?", (loan["book_id"],))
-		self.db.log(session, "BOOK_RETURN", str(loan_id))
-		print(f"Devolucion registrada. Multa: {money(fine)}")
+		name = text(ask("Nombre de la labor"))
+		description = text(ask("Descripcion"))
+		due = ask("Fecha programada", today())
+		cost = ask_float("Costo", 0) or 0
+		person_id = ask_int("ID del responsable (opcional)")
+		if person_id and not self.people.get(person_id):
+			print("Responsable invalido.")
+			return
+		if not name or not is_date(due) or cost < 0:
+			print("Labor, fecha y costo valido son obligatorios.")
+			return
+		self.db.execute("INSERT INTO tasks(crop_id,person_id,title,description,due,cost) VALUES(?,?,?,?,?,?)", (crop_id, person_id, name, description, due, cost))
+		self.db.log("LABOR_CREADA", name)
+		print("Labor programada.")
 
-	def active_loans(self) -> list[sqlite3.Row]:
-		return self.db.query(
-			"""SELECT l.*, b.title, s.full_name FROM loans l JOIN books b ON b.id=l.book_id
-			   JOIN students s ON s.id=l.student_id WHERE l.returned_at IS NULL ORDER BY l.due_date"""
-		)
+	def complete(self) -> None:
+		self.show(True)
+		identifier = ask_int("ID de la labor")
+		row = self.db.one("SELECT * FROM tasks WHERE id=? AND status='pendiente'", (identifier,)) if identifier else None
+		if not row:
+			print("Labor no encontrada.")
+			return
+		self.db.execute("UPDATE tasks SET status='realizada' WHERE id=?", (identifier,))
+		self.db.log("LABOR_COMPLETADA", str(identifier))
+		print("Labor marcada como realizada.")
 
 
-class ReportService:
+class Supplies:
+	def __init__(self, db: Database) -> None:
+		self.db = db
+
+	def get(self, identifier: int) -> Optional[sqlite3.Row]:
+		return self.db.one("SELECT * FROM supplies WHERE id=?", (identifier,))
+
+	def show(self, low: bool = False) -> None:
+		heading("INVENTARIO DE INSUMOS")
+		condition = "WHERE quantity<=minimum" if low else ""
+		rows = self.db.query(f"SELECT * FROM supplies {condition} ORDER BY name")
+		print(f"{'ID':<4} {'INSUMO':<25} {'CATEGORIA':<16} {'CANTIDAD':<12} {'MINIMO':<10} UNIDAD")
+		separator()
+		for row in rows:
+			mark = " *" if row["quantity"] <= row["minimum"] else ""
+			print(f"{row['id']:<4} {row['name'][:24]:<25} {row['category'][:15]:<16} {row['quantity']:<12.2f} {row['minimum']:<10.2f} {row['unit']}{mark}")
+		if not rows:
+			print("No hay insumos.")
+
+	def create(self) -> None:
+		heading("NUEVO INSUMO")
+		name = text(ask("Nombre"))
+		category = text(ask("Categoria", "Semilla"))
+		unit = text(ask("Unidad", "bulto"))
+		quantity = ask_float("Cantidad", 0) or 0
+		minimum = ask_float("Minimo", 0) or 0
+		cost = ask_float("Costo unitario", 0) or 0
+		supplier = text(ask("Proveedor"))
+		if not name or quantity < 0 or minimum < 0 or cost < 0:
+			print("Datos invalidos.")
+			return
+		cursor = self.db.execute("INSERT INTO supplies(name,category,unit,quantity,minimum,unit_cost,supplier) VALUES(?,?,?,?,?,?,?)", (name, category, unit, quantity, minimum, cost, supplier))
+		if quantity:
+			self.db.execute("INSERT INTO movements(supply_id,kind,quantity,movement_date,note) VALUES(?,'entrada',?,?,?)", (cursor.lastrowid, quantity, today(), "Inicial"))
+		self.db.log("INSUMO_CREADO", name)
+		print("Insumo guardado.")
+
+	def move(self) -> None:
+		self.show()
+		identifier = ask_int("ID del insumo")
+		supply = self.get(identifier) if identifier else None
+		if not supply:
+			print("Insumo no encontrado.")
+			return
+		kind = ask("Movimiento (entrada/salida)", "entrada").lower()
+		quantity = ask_float("Cantidad")
+		note = text(ask("Nota"))
+		if kind not in {"entrada", "salida"} or quantity is None or quantity <= 0:
+			print("Movimiento invalido.")
+			return
+		new_value = supply["quantity"] + quantity if kind == "entrada" else supply["quantity"] - quantity
+		if new_value < 0:
+			print("No hay existencias suficientes.")
+			return
+		self.db.execute("UPDATE supplies SET quantity=? WHERE id=?", (new_value, identifier))
+		self.db.execute("INSERT INTO movements(supply_id,kind,quantity,movement_date,note) VALUES(?,?,?,?,?)", (identifier, kind, quantity, today(), note))
+		self.db.log("MOVIMIENTO_INSUMO", f"{identifier}:{kind}")
+		print("Movimiento guardado.")
+
+
+class Harvests:
+	def __init__(self, db: Database, crops: Crops) -> None:
+		self.db = db
+		self.crops = crops
+
+	def get(self, identifier: int) -> Optional[sqlite3.Row]:
+		return self.db.one("SELECT * FROM harvests WHERE id=?", (identifier,))
+
+	def show(self) -> None:
+		heading("COSECHAS")
+		rows = self.db.query("SELECT h.*,c.name crop_name FROM harvests h JOIN crops c ON c.id=h.crop_id ORDER BY h.harvest_date DESC")
+		print(f"{'ID':<4} {'CULTIVO':<18} {'FECHA':<12} {'CANTIDAD':<12} {'UNIDAD':<10} {'CALIDAD':<12} VALOR")
+		separator()
+		for row in rows:
+			print(f"{row['id']:<4} {row['crop_name'][:17]:<18} {row['harvest_date']:<12} {row['quantity']:<12.2f} {row['unit']:<10} {row['quality']:<12} {money(row['quantity'] * row['unit_price'])}")
+		if not rows:
+			print("No hay cosechas.")
+
+	def create(self) -> None:
+		heading("NUEVA COSECHA")
+		self.crops.show()
+		crop_id = ask_int("ID del cultivo")
+		if not crop_id or not self.crops.get(crop_id):
+			print("Cultivo invalido.")
+			return
+		harvest_date = ask("Fecha", today())
+		quantity = ask_float("Cantidad")
+		unit = text(ask("Unidad", "kg"))
+		quality = text(ask("Calidad", "Primera"))
+		price = ask_float("Precio por unidad", 0) or 0
+		note = text(ask("Nota"))
+		if not is_date(harvest_date) or quantity is None or quantity <= 0 or price < 0:
+			print("Datos invalidos.")
+			return
+		self.db.execute("INSERT INTO harvests(crop_id,harvest_date,quantity,unit,quality,unit_price,note) VALUES(?,?,?,?,?,?,?)", (crop_id, harvest_date, quantity, unit, quality, price, note))
+		self.db.log("COSECHA_CREADA", str(crop_id))
+		print("Cosecha registrada.")
+
+
+class Sales:
+	def __init__(self, db: Database, harvests: Harvests) -> None:
+		self.db = db
+		self.harvests = harvests
+
+	def show(self) -> None:
+		heading("VENTAS")
+		rows = self.db.query("SELECT s.*,c.name crop_name FROM sales s JOIN harvests h ON h.id=s.harvest_id JOIN crops c ON c.id=h.crop_id ORDER BY s.sale_date DESC")
+		print(f"{'ID':<4} {'CLIENTE':<24} {'CULTIVO':<16} {'FECHA':<12} {'CANT.':<10} {'TOTAL':<14} PAGO")
+		separator()
+		for row in rows:
+			print(f"{row['id']:<4} {row['customer'][:23]:<24} {row['crop_name'][:15]:<16} {row['sale_date']:<12} {row['quantity']:<10.2f} {money(row['quantity'] * row['unit_price']):<14} {row['payment']}")
+		if not rows:
+			print("No hay ventas.")
+
+	def create(self) -> None:
+		heading("NUEVA VENTA")
+		self.harvests.show()
+		harvest_id = ask_int("ID de la cosecha")
+		harvest = self.harvests.get(harvest_id) if harvest_id else None
+		if not harvest:
+			print("Cosecha no encontrada.")
+			return
+		customer = text(ask("Cliente"))
+		sale_date = ask("Fecha", today())
+		quantity = ask_float("Cantidad vendida")
+		price = ask_float("Precio por unidad", harvest["unit_price"])
+		payment = ask("Pago (pagado/pendiente)", "pagado")
+		if not customer or not is_date(sale_date) or quantity is None or quantity <= 0 or price is None or price < 0:
+			print("Datos invalidos.")
+			return
+		sold = self.db.one("SELECT COALESCE(SUM(quantity),0) total FROM sales WHERE harvest_id=?", (harvest_id,))["total"]
+		if sold + quantity > harvest["quantity"]:
+			print("La cantidad supera la cosecha disponible.")
+			return
+		self.db.execute("INSERT INTO sales(harvest_id,customer,sale_date,quantity,unit_price,payment) VALUES(?,?,?,?,?,?)", (harvest_id, customer, sale_date, quantity, price, payment))
+		self.db.log("VENTA_CREADA", customer)
+		print("Venta registrada por", money(quantity * price))
+
+
+class Expenses:
+	def __init__(self, db: Database) -> None:
+		self.db = db
+
+	def show(self) -> None:
+		heading("GASTOS")
+		rows = self.db.query("SELECT * FROM expenses ORDER BY expense_date DESC")
+		print(f"{'ID':<4} {'FECHA':<12} {'CATEGORIA':<17} {'DESCRIPCION':<36} VALOR")
+		separator()
+		for row in rows:
+			print(f"{row['id']:<4} {row['expense_date']:<12} {row['category'][:16]:<17} {row['description'][:35]:<36} {money(row['amount'])}")
+		if not rows:
+			print("No hay gastos.")
+
+	def create(self) -> None:
+		heading("NUEVO GASTO")
+		category = text(ask("Categoria", "Insumos"))
+		description = text(ask("Descripcion"))
+		amount = ask_float("Valor")
+		expense_date = ask("Fecha", today())
+		if not category or not description or amount is None or amount <= 0 or not is_date(expense_date):
+			print("Datos invalidos.")
+			return
+		self.db.execute("INSERT INTO expenses(category,description,amount,expense_date) VALUES(?,?,?,?)", (category, description, amount, expense_date))
+		self.db.log("GASTO_CREADO", description)
+		print("Gasto registrado.")
+
+
+class Reports:
 	def __init__(self, db: Database) -> None:
 		self.db = db
 
 	def dashboard(self) -> None:
-		title("DASHBOARD EJECUTIVO")
-		stats = [
-			("Estudiantes activos", self.db.one("SELECT COUNT(*) AS n FROM students WHERE status='active'")["n"]),
-			("Cursos creados", self.db.count("courses")),
-			("Tareas publicadas", self.db.count("assignments")),
-			("Libros en catalogo", self.db.count("books")),
-			("Prestamos activos", len(self.db.query("SELECT id FROM loans WHERE returned_at IS NULL"))),
-		]
-		for label, value in stats:
-			print(f"  {label:<30} {value}")
-		line()
-		print("RENDIMIENTO POR CURSO")
-		rows = self.db.query(
-			"""SELECT c.code, c.name, COUNT(DISTINCT e.student_id) AS enrolled,
-					  COALESCE(AVG(g.score), 0) AS average
-			   FROM courses c LEFT JOIN enrollments e ON e.course_id=c.id
-			   LEFT JOIN grades g ON g.enrollment_id=e.id GROUP BY c.id ORDER BY average DESC"""
-		)
+		heading("DASHBOARD DE LA FINCA")
+		items = [("Personas activas", self.db.one("SELECT COUNT(*) n FROM people WHERE active=1")["n"]), ("Lotes", self.db.count("plots")), ("Cultivos activos", self.db.one("SELECT COUNT(*) n FROM crops WHERE status!='finalizado'")["n"]), ("Labores pendientes", self.db.one("SELECT COUNT(*) n FROM tasks WHERE status='pendiente'")["n"]), ("Insumos", self.db.count("supplies")), ("Cosechas", self.db.count("harvests"))]
+		for label, value in items:
+			print(f"  {label:<28} {value}")
+		income = self.db.one("SELECT COALESCE(SUM(quantity*unit_price),0) total FROM sales")["total"]
+		cost = self.db.one("SELECT COALESCE(SUM(amount),0) total FROM expenses")["total"]
+		separator()
+		print("Ingresos:", money(income))
+		print("Gastos:  ", money(cost))
+		print("Balance: ", money(income - cost))
+		separator()
+		print("PROXIMAS LABORES")
+		rows = self.db.query("SELECT title,due,status FROM tasks ORDER BY due LIMIT 5")
 		for row in rows:
-			bar = "#" * int(float(row["average"]) * 4)
-			print(f"  {row['code']:<8} {row['name'][:24]:<25} {row['average']:.2f} [{bar}]")
+			print(f"  {row['due']} | {row['title'][:38]:<38} | {row['status']}")
 		if not rows:
-			print("  Todavia no hay cursos con datos.")
+			print("  No hay labores.")
 
-	def student_ranking(self) -> None:
-		title("RANKING DE ESTUDIANTES")
-		rows = self.db.query(
-			"""SELECT s.code, s.full_name, s.program, COALESCE(AVG(g.score), 0) AS average,
-					  COUNT(DISTINCT e.course_id) AS courses
-			   FROM students s LEFT JOIN enrollments e ON e.student_id=s.id
-			   LEFT JOIN grades g ON g.enrollment_id=e.id
-			   GROUP BY s.id ORDER BY average DESC, s.full_name"""
-		)
-		print(f"{'#':<4} {'CODIGO':<12} {'ESTUDIANTE':<28} {'CURSOS':<8} {'PROMEDIO'}")
-		line()
-		for index, row in enumerate(rows, 1):
-			print(f"{index:<4} {row['code']:<12} {row['full_name'][:27]:<28} {row['courses']:<8} {row['average']:.2f}")
+	def crop_summary(self) -> None:
+		heading("RESUMEN POR CULTIVO")
+		rows = self.db.query("SELECT c.name,c.variety,p.name plot,COALESCE(SUM(h.quantity),0) quantity,COALESCE(SUM(h.quantity*h.unit_price),0) value FROM crops c JOIN plots p ON p.id=c.plot_id LEFT JOIN harvests h ON h.crop_id=c.id GROUP BY c.id ORDER BY c.name")
+		print(f"{'CULTIVO':<18} {'VARIEDAD':<18} {'LOTE':<16} {'CANTIDAD':<12} VALOR")
+		separator()
+		for row in rows:
+			print(f"{row['name'][:17]:<18} {row['variety'][:17]:<18} {row['plot'][:15]:<16} {row['quantity']:<12.2f} {money(row['value'])}")
+		if not rows:
+			print("No hay cultivos.")
 
-	def attendance_summary(self) -> None:
-		title("RESUMEN OPERATIVO")
-		overdue = self.db.query(
-			"SELECT COUNT(*) AS total FROM loans WHERE returned_at IS NULL AND due_date < ?", (today_text(),)
-		)[0]["total"]
-		pending = self.db.query("SELECT COUNT(*) AS total FROM assignments WHERE status='open' AND due_date >= ?", (today_text(),))[0]["total"]
-		inactive = self.db.query("SELECT COUNT(*) AS total FROM students WHERE status != 'active'")[0]["total"]
-		print(f"Prestamos vencidos: {overdue}")
-		print(f"Tareas pendientes: {pending}")
-		print(f"Estudiantes no activos: {inactive}")
-		print(f"Base de datos: {DB_FILE}")
+	def low(self) -> None:
+		heading("ALERTAS DE INVENTARIO")
+		rows = self.db.query("SELECT name,quantity,minimum,unit FROM supplies WHERE quantity<=minimum ORDER BY quantity")
+		for row in rows:
+			print(f"  {row['name']}: {row['quantity']} {row['unit']} disponibles; minimo {row['minimum']}")
+		if not rows:
+			print("No hay alertas.")
 
-	def export_csv(self, entity: str) -> Optional[Path]:
-		queries = {
-			"students": "SELECT code, full_name, email, phone, program, semester, status FROM students ORDER BY full_name",
-			"courses": "SELECT code, name, teacher, credits, room, schedule FROM courses ORDER BY name",
-			"books": "SELECT isbn, title, author, category, total, available FROM books ORDER BY title",
-			"loans": "SELECT l.id, b.title, s.full_name, l.loaned_at, l.due_date, l.returned_at, l.fine FROM loans l JOIN books b ON b.id=l.book_id JOIN students s ON s.id=l.student_id",
-		}
-		if entity not in queries:
+	def activity(self) -> None:
+		heading("ACTIVIDAD RECIENTE")
+		rows = self.db.query("SELECT created_at,action,detail FROM activity ORDER BY id DESC LIMIT 15")
+		for row in rows:
+			print(f"{row['created_at']} | {row['action']:<24} | {row['detail']}")
+		if not rows:
+			print("No hay actividad.")
+
+	def export(self, name: str) -> Optional[Path]:
+		queries = {"cultivos": "SELECT c.name,c.variety,p.name plot,c.planted,c.expected,c.area,c.status FROM crops c JOIN plots p ON p.id=c.plot_id", "cosechas": "SELECT c.name crop,h.harvest_date,h.quantity,h.unit,h.quality,h.unit_price FROM harvests h JOIN crops c ON c.id=h.crop_id", "ventas": "SELECT s.customer,c.name crop,s.sale_date,s.quantity,s.unit_price,s.payment FROM sales s JOIN harvests h ON h.id=s.harvest_id JOIN crops c ON c.id=h.crop_id", "gastos": "SELECT category,description,amount,expense_date FROM expenses"}
+		if name not in queries:
 			return None
-		rows = self.db.query(queries[entity])
-		EXPORT_DIR.mkdir(exist_ok=True)
-		path = EXPORT_DIR / f"{entity}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+		rows = self.db.query(queries[name])
+		path = Path(__file__).with_name(f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
 		with path.open("w", newline="", encoding="utf-8") as file:
 			writer = csv.writer(file)
 			if rows:
@@ -626,285 +582,207 @@ class ReportService:
 		return path
 
 
-class DemoData:
+class Demo:
 	def __init__(self, db: Database) -> None:
 		self.db = db
 
 	def load(self) -> None:
-		if self.db.count("students") > 0:
+		if self.db.count("plots"):
 			return
-		students = [
-			("A001", "Valentina Rojas", "valentina@aulaflow.edu", "3001112233", "Desarrollo de Software", 3),
-			("A002", "Mateo Castillo", "mateo@aulaflow.edu", "3002223344", "Desarrollo de Software", 2),
-			("A003", "Sofia Mendoza", "sofia@aulaflow.edu", "3003334455", "Analisis de Datos", 4),
-			("A004", "Daniel Torres", "daniel@aulaflow.edu", "3004445566", "Ciberseguridad", 5),
-		]
-		for student in students:
-			self.db.execute(
-				"INSERT INTO students(code, full_name, email, phone, program, semester, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				(*student, now_text()),
-			)
-		courses = [
-			("PROG101", "Fundamentos de Programacion", "Laura Gomez", 4, "Lab 1", "Lun-Mie 8:00"),
-			("DB202", "Bases de Datos", "Carlos Perez", 3, "Lab 2", "Mar-Jue 10:00"),
-			("UX303", "Experiencia de Usuario", "Ana Ruiz", 3, "Aula 4", "Vie 14:00"),
-		]
-		for course in courses:
-			self.db.execute("INSERT INTO courses(code, name, teacher, credits, room, schedule) VALUES (?, ?, ?, ?, ?, ?)", course)
-		books = [
-			("978-0132350884", "Clean Code", "Robert C. Martin", "Programacion", 3, 3),
-			("978-1492051367", "Python Crash Course", "Eric Matthes", "Python", 2, 2),
-			("978-0201633610", "Design Patterns", "Erich Gamma", "Arquitectura", 1, 1),
-		]
-		for book in books:
-			self.db.execute("INSERT INTO books(isbn, title, author, category, total, available) VALUES (?, ?, ?, ?, ?, ?)", book)
-		student_ids = [row["id"] for row in self.db.query("SELECT id FROM students ORDER BY id")]
-		course_ids = [row["id"] for row in self.db.query("SELECT id FROM courses ORDER BY id")]
-		for student_id, course_id in zip(student_ids, [course_ids[0], course_ids[0], course_ids[1], course_ids[2]]):
-			self.db.execute("INSERT INTO enrollments(student_id, course_id, enrolled_at) VALUES (?, ?, ?)", (student_id, course_id, now_text()))
-		enrollment_ids = [row["id"] for row in self.db.query("SELECT id FROM enrollments ORDER BY id")]
-		for enrollment_id, label, score, weight in [(enrollment_ids[0], "Parcial", 4.6, 2), (enrollment_ids[0], "Proyecto", 4.8, 3), (enrollment_ids[1], "Parcial", 3.8, 2), (enrollment_ids[2], "Proyecto", 4.2, 3)]:
-			self.db.execute("INSERT INTO grades(enrollment_id, label, score, weight, recorded_at) VALUES (?, ?, ?, ?, ?)", (enrollment_id, label, score, weight, now_text()))
-		self.db.execute("INSERT INTO assignments(course_id, title, description, due_date, max_score) VALUES (?, ?, ?, ?, ?)", (course_ids[0], "API de biblioteca", "Construir endpoints CRUD con validaciones.", (date.today() + timedelta(days=5)).isoformat(), 5))
-		self.db.execute("INSERT INTO assignments(course_id, title, description, due_date, max_score) VALUES (?, ?, ?, ?, ?)", (course_ids[1], "Modelo relacional", "Entregar diagrama normalizado.", (date.today() + timedelta(days=10)).isoformat(), 5))
+		people = [("Ana Martinez", "1001", "3001112233", "ana@finca.co", "Administradora"), ("Luis Gomez", "1002", "3002223344", "luis@finca.co", "Trabajador"), ("Marta Rojas", "1003", "3003334455", "marta@finca.co", "Tecnica")]
+		for person in people:
+			self.db.execute("INSERT INTO people(name,document,phone,email,role,created_at) VALUES(?,?,?,?,?,?)", (*person, now()))
+		plots = [("La Esperanza", 4.5, "Norte", "Franco", "Nacimiento"), ("El Mirador", 2.0, "Alto", "Arcilloso", "Tanque"), ("La Huerta", .8, "Casa", "Organico", "Goteo")]
+		for plot in plots:
+			self.db.execute("INSERT INTO plots(name,area,location,soil,water) VALUES(?,?,?,?,?)", plot)
+		plot_ids = [r["id"] for r in self.db.query("SELECT id FROM plots")]
+		person_ids = [r["id"] for r in self.db.query("SELECT id FROM people")]
+		crops = [("Cafe", "Castillo", plot_ids[0], person_ids[0], (date.today()-timedelta(days=160)).isoformat(), (date.today()+timedelta(days=30)).isoformat(), 3.2, "Buen desarrollo"), ("Tomate", "Chonto", plot_ids[1], person_ids[1], (date.today()-timedelta(days=45)).isoformat(), (date.today()+timedelta(days=20)).isoformat(), 1.4, "Vigilar insectos"), ("Lechuga", "Crespa", plot_ids[2], person_ids[2], (date.today()-timedelta(days=25)).isoformat(), (date.today()+timedelta(days=8)).isoformat(), .5, "Venta local")]
+		for crop in crops:
+			self.db.execute("INSERT INTO crops(name,variety,plot_id,person_id,planted,expected,area,notes) VALUES(?,?,?,?,?,?,?,?)", crop)
+		crop_ids = [r["id"] for r in self.db.query("SELECT id FROM crops")]
+		for task in [(crop_ids[0], person_ids[1], "Aplicar abono", "Distribuir compost", today(), "pendiente", 85000), (crop_ids[1], person_ids[1], "Revisar riego", "Verificar goteros", (date.today()+timedelta(days=2)).isoformat(), "pendiente", 30000), (crop_ids[2], person_ids[2], "Cosecha de control", "Seleccionar unidades", (date.today()+timedelta(days=5)).isoformat(), "pendiente", 15000)]:
+			self.db.execute("INSERT INTO tasks(crop_id,person_id,title,description,due,status,cost) VALUES(?,?,?,?,?,?,?)", task)
+		for supply in [("Semilla de lechuga", "Semilla", "sobre", 18, 5, 12000, "Valle"), ("Compost", "Fertilizante", "bulto", 3, 4, 28000, "Granja"), ("Caldo biologico", "Control", "litro", 12, 5, 9500, "BioCampo")]:
+			self.db.execute("INSERT INTO supplies(name,category,unit,quantity,minimum,unit_cost,supplier) VALUES(?,?,?,?,?,?,?)", supply)
+		self.db.execute("INSERT INTO harvests(crop_id,harvest_date,quantity,unit,quality,unit_price,note) VALUES(?,?,?,?,?,?,?)", (crop_ids[2], today(), 45, "kg", "Primera", 4500, "Prueba"))
+		harvest_id = self.db.one("SELECT id FROM harvests ORDER BY id DESC LIMIT 1")["id"]
+		self.db.execute("INSERT INTO sales(harvest_id,customer,sale_date,quantity,unit_price,payment) VALUES(?,?,?,?,?,?)", (harvest_id, "Restaurante El Sabor", today(), 30, 5000, "pagado"))
+		self.db.execute("INSERT INTO expenses(category,description,amount,expense_date) VALUES(?,?,?,?)", ("Insumos", "Compra de compost", 84000, today()))
+		self.db.log("DEMO_CARGADA", "Datos de ejemplo")
 
 
-class AulaFlow:
+class App:
 	def __init__(self) -> None:
 		self.db = Database()
-		self.auth = AuthService(self.db)
-		self.students = StudentService(self.db)
-		self.academic = AcademicService(self.db, self.students)
-		self.library = LibraryService(self.db, self.students)
-		self.reports = ReportService(self.db)
-		self.auth.ensure_admin()
+		self.people = People(self.db)
+		self.plots = Plots(self.db)
+		self.crops = Crops(self.db, self.plots, self.people)
+		self.tasks = Tasks(self.db, self.crops, self.people)
+		self.supplies = Supplies(self.db)
+		self.harvests = Harvests(self.db, self.crops)
+		self.sales = Sales(self.db, self.harvests)
+		self.expenses = Expenses(self.db)
+		self.reports = Reports(self.db)
 
 	def close(self) -> None:
 		self.db.close()
 
 	def run(self) -> None:
-		title(f"{APP_NAME} | GESTION ACADEMICA")
-		print("Una plataforma local para organizar el trabajo del campus.")
-		session = self.auth.login()
-		if not session:
-			return
+		heading(f"{APP} | FINCA Y PRODUCCION")
+		print("Control sencillo para organizar el trabajo agropecuario.")
+		name = ask("Usuario", "Administrador")
 		while True:
 			try:
-				self.menu(session)
-				option = ask("Selecciona una opcion")
+				self.menu(name)
+				option = ask("Opcion")
 				if option == "0":
-					print("Sesion finalizada. Hasta pronto.")
+					print("Hasta pronto,", name)
 					return
-				self.handle(option, session)
+				self.handle(option)
 			except KeyboardInterrupt:
 				print("\nOperacion cancelada.")
 			except sqlite3.Error as error:
-				print(f"Error de base de datos: {error}")
-			except Exception as error:
-				print(f"No se pudo completar la operacion: {error}")
+				print("Error de base de datos:", error)
 			pause()
 
-	def menu(self, session: Session) -> None:
-		title(f"PANEL PRINCIPAL | {session.full_name}")
-		print("1. Dashboard ejecutivo")
-		print("2. Gestionar estudiantes")
-		print("3. Gestionar cursos e inscripciones")
-		print("4. Gestionar tareas y notas")
-		print("5. Biblioteca y prestamos")
-		print("6. Reportes y exportacion")
-		if session.role == "admin":
-			print("7. Administracion de usuarios")
-		print("0. Cerrar sesion")
+	def menu(self, name: str) -> None:
+		heading(f"PANEL PRINCIPAL | {name}")
+		print("1. Dashboard")
+		print("2. Productores y trabajadores")
+		print("3. Lotes y cultivos")
+		print("4. Agenda de labores")
+		print("5. Inventario de insumos")
+		print("6. Cosechas y ventas")
+		print("7. Gastos")
+		print("8. Reportes y exportacion")
+		print("9. Actividad reciente")
+		print("0. Salir")
 
-	def handle(self, option: str, session: Session) -> None:
-		actions = {
-			"1": self.dashboard_menu,
-			"2": self.students_menu,
-			"3": self.courses_menu,
-			"4": self.assignments_menu,
-			"5": self.library_menu,
-			"6": self.reports_menu,
-		}
+	def handle(self, option: str) -> None:
+		actions = {"1": self.reports.dashboard, "2": self.people_menu, "3": self.crops_menu, "4": self.tasks_menu, "5": self.supplies_menu, "6": self.harvest_menu, "7": self.expenses_menu, "8": self.reports_menu, "9": self.reports.activity}
 		if option in actions:
-			actions[option](session)
-		elif option == "7" and session.role == "admin":
-			self.users_menu(session)
+			actions[option]()
 		else:
 			print("Opcion no reconocida.")
 
-	def dashboard_menu(self, session: Session) -> None:
-		self.reports.dashboard()
-
-	def students_menu(self, session: Session) -> None:
+	def people_menu(self) -> None:
 		while True:
-			title("GESTION DE ESTUDIANTES")
-			print("1. Listar estudiantes")
-			print("2. Buscar estudiantes")
-			print("3. Registrar estudiante")
-			print("4. Ver perfil academico")
-			print("5. Cambiar estado")
-			print("0. Volver")
+			heading("PERSONAS")
+			print("1. Listar  2. Buscar  3. Registrar  4. Cambiar estado  0. Volver")
 			option = ask("Opcion")
-			if option == "0":
-				return
-			if option == "1":
-				self.students.show()
-			elif option == "2":
-				self.students.show(ask("Texto de busqueda"))
-			elif option == "3":
-				self.students.create(session)
-			elif option == "4":
-				self.students.show()
-				student_id = ask_int("ID")
-				if student_id:
-					self.students.profile(student_id)
-			elif option == "5":
-				self.students.change_status(session)
-			else:
-				print("Opcion no reconocida.")
+			if option == "0": return
+			if option == "1": self.people.show()
+			elif option == "2": self.people.show(ask("Busqueda"))
+			elif option == "3": self.people.create()
+			elif option == "4": self.people.toggle()
+			else: print("Opcion no reconocida.")
 			pause()
 
-	def courses_menu(self, session: Session) -> None:
+	def crops_menu(self) -> None:
 		while True:
-			title("CURSOS E INSCRIPCIONES")
-			print("1. Ver cursos")
-			print("2. Crear curso")
-			print("3. Inscribir estudiante")
-			print("0. Volver")
+			heading("LOTES Y CULTIVOS")
+			print("1. Ver lotes  2. Crear lote  3. Ver cultivos  4. Buscar  5. Crear cultivo  6. Finalizar  0. Volver")
 			option = ask("Opcion")
-			if option == "0":
-				return
-			if option == "1":
-				self.academic.show_courses()
-			elif option == "2":
-				self.academic.create_course(session)
-			elif option == "3":
-				self.academic.enroll(session)
-			else:
-				print("Opcion no reconocida.")
+			if option == "0": return
+			if option == "1": self.plots.show()
+			elif option == "2": self.plots.create()
+			elif option == "3": self.crops.show()
+			elif option == "4": self.crops.show(ask("Busqueda"))
+			elif option == "5": self.crops.create()
+			elif option == "6": self.crops.finish()
+			else: print("Opcion no reconocida.")
 			pause()
 
-	def assignments_menu(self, session: Session) -> None:
+	def tasks_menu(self) -> None:
 		while True:
-			title("TAREAS Y CALIFICACIONES")
-			print("1. Ver tareas")
-			print("2. Publicar tarea")
-			print("3. Registrar nota")
-			print("0. Volver")
+			heading("LABORES")
+			print("1. Todas  2. Pendientes  3. Programar  4. Completar  0. Volver")
 			option = ask("Opcion")
-			if option == "0":
-				return
-			if option == "1":
-				self.academic.show_assignments()
-			elif option == "2":
-				self.academic.create_assignment(session)
-			elif option == "3":
-				self.academic.record_grade(session)
-			else:
-				print("Opcion no reconocida.")
+			if option == "0": return
+			if option == "1": self.tasks.show()
+			elif option == "2": self.tasks.show(True)
+			elif option == "3": self.tasks.create()
+			elif option == "4": self.tasks.complete()
+			else: print("Opcion no reconocida.")
 			pause()
 
-	def library_menu(self, session: Session) -> None:
+	def supplies_menu(self) -> None:
 		while True:
-			title("BIBLIOTECA")
-			print("1. Ver catalogo")
-			print("2. Buscar libro")
-			print("3. Agregar libro")
-			print("4. Crear prestamo")
-			print("5. Registrar devolucion")
-			print("0. Volver")
+			heading("INVENTARIO")
+			print("1. Ver  2. Alertas  3. Nuevo insumo  4. Entrada o salida  0. Volver")
 			option = ask("Opcion")
-			if option == "0":
-				return
-			if option == "1":
-				self.library.show_books()
-			elif option == "2":
-				self.library.show_books(ask("Texto de busqueda"))
-			elif option == "3":
-				self.library.add_book(session)
-			elif option == "4":
-				self.library.loan(session)
-			elif option == "5":
-				self.library.return_book(session)
-			else:
-				print("Opcion no reconocida.")
+			if option == "0": return
+			if option == "1": self.supplies.show()
+			elif option == "2": self.reports.low()
+			elif option == "3": self.supplies.create()
+			elif option == "4": self.supplies.move()
+			else: print("Opcion no reconocida.")
 			pause()
 
-	def reports_menu(self, session: Session) -> None:
+	def harvest_menu(self) -> None:
 		while True:
-			title("REPORTES Y EXPORTACION")
-			print("1. Ranking de estudiantes")
-			print("2. Resumen operativo")
-			print("3. Exportar estudiantes CSV")
-			print("4. Exportar cursos CSV")
-			print("5. Exportar libros CSV")
-			print("6. Exportar prestamos CSV")
-			print("0. Volver")
+			heading("COSECHAS Y VENTAS")
+			print("1. Ver cosechas  2. Registrar cosecha  3. Ver ventas  4. Registrar venta  0. Volver")
 			option = ask("Opcion")
-			if option == "0":
-				return
-			if option == "1":
-				self.reports.student_ranking()
-			elif option == "2":
-				self.reports.attendance_summary()
+			if option == "0": return
+			if option == "1": self.harvests.show()
+			elif option == "2": self.harvests.create()
+			elif option == "3": self.sales.show()
+			elif option == "4": self.sales.create()
+			else: print("Opcion no reconocida.")
+			pause()
+
+	def expenses_menu(self) -> None:
+		while True:
+			heading("GASTOS")
+			print("1. Ver gastos  2. Registrar gasto  0. Volver")
+			option = ask("Opcion")
+			if option == "0": return
+			if option == "1": self.expenses.show()
+			elif option == "2": self.expenses.create()
+			else: print("Opcion no reconocida.")
+			pause()
+
+	def reports_menu(self) -> None:
+		while True:
+			heading("REPORTES")
+			print("1. Resumen por cultivo  2. Alertas  3. CSV cultivos  4. CSV cosechas  5. CSV ventas  6. CSV gastos  0. Volver")
+			option = ask("Opcion")
+			if option == "0": return
+			if option == "1": self.reports.crop_summary()
+			elif option == "2": self.reports.low()
 			elif option in {"3", "4", "5", "6"}:
-				entity = {"3": "students", "4": "courses", "5": "books", "6": "loans"}[option]
-				path = self.reports.export_csv(entity)
-				print(f"Archivo creado: {path}")
-			else:
-				print("Opcion no reconocida.")
-			pause()
-
-	def users_menu(self, session: Session) -> None:
-		while True:
-			title("ADMINISTRACION")
-			print("1. Crear usuario")
-			print("2. Ver actividad reciente")
-			print("0. Volver")
-			option = ask("Opcion")
-			if option == "0":
-				return
-			if option == "1":
-				self.auth.create_user(session)
-			elif option == "2":
-				rows = self.db.query("SELECT created_at, action, details FROM activity_log ORDER BY id DESC LIMIT 15")
-				for row in rows:
-					print(f"{row['created_at']} | {row['action']:<22} | {row['details']}")
-			else:
-				print("Opcion no reconocida.")
+				name = {"3": "cultivos", "4": "cosechas", "5": "ventas", "6": "gastos"}[option]
+				print("Archivo creado:", self.reports.export(name))
+			else: print("Opcion no reconocida.")
 			pause()
 
 
-def run_demo() -> None:
-	"""Ejecuta un recorrido no interactivo para comprobar que el sistema funciona."""
+def demo() -> None:
 	db = Database()
-	AuthService(db).ensure_admin()
-	DemoData(db).load()
-	print(f"{APP_NAME}: datos de demostracion listos")
-	print(f"Estudiantes: {db.count('students')}")
-	print(f"Cursos: {db.count('courses')}")
-	print(f"Libros: {db.count('books')}")
-	print(f"Tareas: {db.count('assignments')}")
-	print("Base de datos:", DB_FILE)
-	ReportService(db).dashboard()
+	Demo(db).load()
+	print(f"{APP}: demo lista")
+	print("Personas:", db.count("people"))
+	print("Lotes:", db.count("plots"))
+	print("Cultivos:", db.count("crops"))
+	print("Cosechas:", db.count("harvests"))
+	print("Ventas:", db.count("sales"))
+	Reports(db).dashboard()
 	db.close()
 
 
-def parse_args() -> argparse.Namespace:
-	parser = argparse.ArgumentParser(description="AulaFlow - gestion academica")
-	parser.add_argument("--demo", action="store_true", help="carga datos de ejemplo y muestra el dashboard")
-	parser.add_argument("--reset-demo", action="store_true", help="borra la base local antes de cargar demo")
-	return parser.parse_args()
-
-
 def main() -> None:
-	args = parse_args()
-	if args.reset_demo and DB_FILE.exists():
-		DB_FILE.unlink()
+	parser = argparse.ArgumentParser(description="Sistema agropecuario sencillo")
+	parser.add_argument("--demo", action="store_true", help="cargar datos de ejemplo")
+	parser.add_argument("--reset", action="store_true", help="borrar la base local")
+	args = parser.parse_args()
+	if args.reset and DB.exists():
+		DB.unlink()
 	if args.demo:
-		run_demo()
+		demo()
 		return
-	app = AulaFlow()
+	app = App()
 	try:
 		app.run()
 	finally:
