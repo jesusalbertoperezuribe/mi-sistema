@@ -1,4 +1,5 @@
 #hacendado
+#esto todavia nosol
 
 """AgroGestor: sistema de consola para administrar una finca pequena.
 
