@@ -1,3 +1,5 @@
+#hacendado
+
 """AgroGestor: sistema de consola para administrar una finca pequena.
 
 Proyecto educativo, sin dependencias externas. Incluye productores, lotes,
